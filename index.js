@@ -13,7 +13,7 @@ connectDB();
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 
     ? [process.env.BASE_URL] 
-    : ["https://viens-hier-rouge.vercel.app/"],  
+    : ["https://vienshier.netlify.app/"],  
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization"],
 };
@@ -28,7 +28,7 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 // Remove the condition - always start the server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log('Server started successfully');
 });
