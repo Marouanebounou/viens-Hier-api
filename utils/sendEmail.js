@@ -1,25 +1,59 @@
 const nodemailer = require('nodemailer');
-const fs = require('fs');
-const { PDFDocument, rgb, StandardFonts } = require('pdf-lib');
+const fs = require('fs').promises; // Use promises version for better async handling
+const { PDFDocument, rgb } = require('pdf-lib');
 const path = require('path');
 const { saveUser } = require('../controllers/user');
+const fontkit = require('fontkit');
 
-const sendEmailWithAttachment = async (fullName,email,attachmentPath) => {
+// Cache the template and font globally to avoid repeated file I/O
+let templateCache = null;
+let fontCache = null;
+let transporterCache = null;
 
-    let transporter = nodemailer.createTransport({
-        host:process.env.HOST,
-        port:Number(process.env.PORT),
-        secure:Boolean(process.env.SECURE),
-        auth:{
-            user:process.env.USER,
-            pass:process.env.PASS,
+// Initialize transporter once
+const getTransporter = () => {
+    if (!transporterCache) {
+        transporterCache = nodemailer.createTransporter({
+            host: process.env.HOST,
+            port: Number(process.env.PORT),
+            secure: Boolean(process.env.SECURE),
+            auth: {
+                user: process.env.USER,
+                pass: process.env.PASS,
+            },
+            // Add connection pooling for better performance
+            pool: true,
+            maxConnections: 5,
+            maxMessages: 100,
+        });
+    }
+    return transporterCache;
+};
+
+// Preload template and font
+const initializeAssets = async () => {
+    try {
+        if (!templateCache) {
+            templateCache = await fs.readFile('./templates/Invitation-template.pdf');
         }
-    })
-const mailOptions = {
-    from: process.env.USER,
-    to: email,
-    subject: `You're Invited! Viens Hier!`,
-    html: `
+        if (!fontCache) {
+            const fontBytes = await fs.readFile('./fonts/BarlowCondensed.ttf');
+            fontCache = fontBytes;
+        }
+    } catch (error) {
+        console.error('Error loading assets:', error);
+        throw error;
+    }
+};
+
+const sendEmailWithAttachment = async (fullName, email, attachmentPath) => {
+    const transporter = getTransporter();
+    
+    const mailOptions = {
+        from: process.env.USER,
+        to: email,
+        subject: `You're Invited! Viens Hier!`,
+        html: `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -95,71 +129,121 @@ const mailOptions = {
 
 </body>
 </html>
-
-    `,
-    attachments: [
-        {
-            filename: `${fullName}_Invitation.pdf`,
-            path: attachmentPath,
-            contentType: 'application/pdf'
-        },
-    ],
-};
-    console.log(mailOptions);
-    let info = await transporter.sendMail(mailOptions);
+        `,
+        attachments: [
+            {
+                filename: `${fullName}_Invitation.pdf`,
+                path: attachmentPath,
+                contentType: 'application/pdf'
+            },
+        ],
+    };
+    
+    const info = await transporter.sendMail(mailOptions);
     console.log("Message sent: %s", info.messageId);
-}
-
-const fontkit = require('fontkit'); // Add this import
+    return info;
+};
 
 const personalizeAndSendInvite = async (fullName, email, number) => {
-  
-
-  try {
-    // Load the template
-    const templateBytes = fs.readFileSync('./templates/Invitation-template.pdf');
-    const pdfDoc = await PDFDocument.load(templateBytes);
-    
-    // Register fontkit - THIS IS THE KEY FIX
-    pdfDoc.registerFontkit(fontkit);
-    
-    // Load custom font (Bukhari Script)
-    const fontBytes = fs.readFileSync('./fonts/BarlowCondensed.ttf');
-    const customFont = await pdfDoc.embedFont(fontBytes);
-    
-    const pages = pdfDoc.getPages();
-    const firstPage = pages[0];
-    const { width } = firstPage.getSize();
-    
-    const name = fullName.toUpperCase();
-    const fontSize = 33;
-    const textWidth = customFont.widthOfTextAtSize(name, fontSize);
-    const x = (width - textWidth) / 2 + 50;
-    const y = 75;
-    
-    // Draw the name
-    firstPage.drawText(name, {
-      x,
-      y,
-      size: fontSize,
-      font: customFont,
-      color: rgb(0.784, 0.729, 0.678),
-    });
-    
-    // Save PDF
-    const pdfBytes = await pdfDoc.save();
-    const pdfPath = `invites/${fullName}.pdf`;
-    fs.writeFileSync(pdfPath, pdfBytes);
-    
-    console.log(`Personalized invitation created for ${fullName}`);
-    // Send email
-    await sendEmailWithAttachment(fullName,email, pdfPath);
-    await saveUser(fullName,email,number);
-    console.log(`Invitation sent successfully to ${fullName} at ${email}`);
-    
-  } catch (error) {
-    console.error('Error creating personalized invitation:', error);
-    throw error;
-  }
+    try {
+        // Initialize assets if not already done
+        await initializeAssets();
+        
+        // Load PDF from cache
+        const pdfDoc = await PDFDocument.load(templateCache);
+        
+        // Register fontkit and embed font
+        pdfDoc.registerFontkit(fontkit);
+        const customFont = await pdfDoc.embedFont(fontCache);
+        
+        const pages = pdfDoc.getPages();
+        const firstPage = pages[0];
+        const { width } = firstPage.getSize();
+        
+        const name = fullName.toUpperCase();
+        const fontSize = 33;
+        const textWidth = customFont.widthOfTextAtSize(name, fontSize);
+        const x = (width - textWidth) / 2 + 50;
+        const y = 75;
+        
+        // Draw the name
+        firstPage.drawText(name, {
+            x,
+            y,
+            size: fontSize,
+            font: customFont,
+            color: rgb(0.784, 0.729, 0.678),
+        });
+        
+        // Save PDF
+        const pdfBytes = await pdfDoc.save();
+        const pdfPath = `invites/${fullName}.pdf`;
+        
+        // Ensure directory exists
+        const dir = path.dirname(pdfPath);
+        await fs.mkdir(dir, { recursive: true });
+        
+        await fs.writeFile(pdfPath, pdfBytes);
+        
+        console.log(`Personalized invitation created for ${fullName}`);
+        
+        // Run email sending and user saving in parallel
+        const [emailResult] = await Promise.all([
+            sendEmailWithAttachment(fullName, email, pdfPath),
+            saveUser(fullName, email, number)
+        ]);
+        
+        console.log(`Invitation sent successfully to ${fullName} at ${email}`);
+        return emailResult;
+        
+    } catch (error) {
+        console.error('Error creating personalized invitation:', error);
+        throw error;
+    }
 };
-module.exports = {personalizeAndSendInvite,sendEmailWithAttachment};
+
+// Batch processing function for multiple invitations
+const personalizeAndSendInviteBatch = async (invitations, concurrencyLimit = 3) => {
+    // Initialize assets once for the entire batch
+    await initializeAssets();
+    
+    const results = [];
+    
+    // Process in batches to avoid overwhelming the email server
+    for (let i = 0; i < invitations.length; i += concurrencyLimit) {
+        const batch = invitations.slice(i, i + concurrencyLimit);
+        
+        const batchPromises = batch.map(({ fullName, email, number }) =>
+            personalizeAndSendInvite(fullName, email, number).catch(error => ({
+                error,
+                fullName,
+                email
+            }))
+        );
+        
+        const batchResults = await Promise.all(batchPromises);
+        results.push(...batchResults);
+        
+        // Small delay between batches to be respectful to email servers
+        if (i + concurrencyLimit < invitations.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+    
+    return results;
+};
+
+// Cleanup function to close transporter when done
+const cleanup = () => {
+    if (transporterCache) {
+        transporterCache.close();
+        transporterCache = null;
+    }
+};
+
+module.exports = {
+    personalizeAndSendInvite,
+    sendEmailWithAttachment,
+    personalizeAndSendInviteBatch,
+    cleanup
+};
