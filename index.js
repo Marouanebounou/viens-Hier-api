@@ -13,7 +13,7 @@ connectDB();
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production' 
     ? [process.env.BASE_URL] 
-    : ["https://vienshier.netlify.app/"],  
+    : ["https://viens-hier-rouge.vercel.app/"],  
   credentials: true,
   allowedHeaders: ["Content-Type", "Authorization"],
 };
