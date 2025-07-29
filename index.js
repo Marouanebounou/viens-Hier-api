@@ -1,0 +1,36 @@
+const express = require('express');
+const cors = require('cors');
+const invitation = require('./routes/invitation');
+const dotenv = require('dotenv');
+dotenv.config();
+const connectDB = require('./config/dbConnection');
+
+const app = express();
+app.use(express.json());
+
+connectDB();
+
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.BASE_URL] 
+    : ["https://vienshier.netlify.app/"],  
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.use('/api', invitation);
+
+app.get("/", (req, res) => {
+  res.send("hello world!");
+});
+
+const PORT = process.env.PORT || 3000;
+
+// Remove the condition - always start the server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT}`);
+  console.log('Server started successfully');
+});
+
+module.exports = app;
