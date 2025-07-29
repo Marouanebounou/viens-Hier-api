@@ -1,5 +1,5 @@
 const nodemailer = require('nodemailer');
-const fs = require('fs').promises; // Use promises version for better async handling
+const fs = require('fs').promises;
 const { PDFDocument, rgb } = require('pdf-lib');
 const path = require('path');
 const { saveUser } = require('../controllers/user');
@@ -10,21 +10,54 @@ let templateCache = null;
 let fontCache = null;
 let transporterCache = null;
 
-// Initialize transporter once
+// Initialize transporter once with CORRECT Gmail settings
 const getTransporter = () => {
     if (!transporterCache) {
-        transporterCache = nodemailer.createTransporter({
-            host: process.env.HOST,
-            port: Number(process.env.PORT),
-            secure: Boolean(process.env.SECURE),
+        // Validate environment variables
+        const requiredEnvVars = ['USER', 'PASS'];
+        const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+        
+        if (missingVars.length > 0) {
+            throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
+        }
+
+        console.log('Gmail SMTP Configuration:', {
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false,
+            user: process.env.USER ? 'SET' : 'NOT SET'
+        });
+
+        // CORRECT Gmail SMTP Configuration
+        transporterCache = nodemailer.createTransport({
+            host: 'smtp.gmail.com',
+            port: 587,
+            secure: false, // true for port 465, false for other ports
             auth: {
-                user: process.env.USER,
-                pass: process.env.PASS,
+                user: process.env.USER, // Your Gmail address
+                pass: process.env.PASS, // Your Gmail App Password (NOT regular password)
             },
             // Add connection pooling for better performance
             pool: true,
             maxConnections: 5,
             maxMessages: 100,
+            // Add timeout settings
+            connectionTimeout: 60000, // 60 seconds
+            greetingTimeout: 30000, // 30 seconds
+            socketTimeout: 60000, // 60 seconds
+            // Add TLS options for better compatibility
+            tls: {
+                rejectUnauthorized: false
+            }
+        });
+
+        // Verify the connection
+        transporterCache.verify((error, success) => {
+            if (error) {
+                console.error('Gmail SMTP connection verification failed:', error);
+            } else {
+                console.log('Gmail SMTP server is ready to take our messages');
+            }
         });
     }
     return transporterCache;
@@ -47,13 +80,14 @@ const initializeAssets = async () => {
 };
 
 const sendEmailWithAttachment = async (fullName, email, attachmentPath) => {
-    const transporter = getTransporter();
-    
-    const mailOptions = {
-        from: process.env.USER,
-        to: email,
-        subject: `You're Invited! Viens Hier!`,
-        html: `
+    try {
+        const transporter = getTransporter();
+        
+        const mailOptions = {
+            from: process.env.USER, // Gmail address
+            to: email,
+            subject: `You're Invited! Viens Hier!`,
+            html: `
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -129,19 +163,25 @@ const sendEmailWithAttachment = async (fullName, email, attachmentPath) => {
 
 </body>
 </html>
-        `,
-        attachments: [
-            {
-                filename: `${fullName}_Invitation.pdf`,
-                path: attachmentPath,
-                contentType: 'application/pdf'
-            },
-        ],
-    };
-    
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Message sent: %s", info.messageId);
-    return info;
+            `,
+            attachments: [
+                {
+                    filename: `${fullName}_Invitation.pdf`,
+                    path: attachmentPath,
+                    contentType: 'application/pdf'
+                },
+            ],
+        };
+        
+        console.log(`Attempting to send email to: ${email}`);
+        const info = await transporter.sendMail(mailOptions);
+        console.log("Message sent: %s", info.messageId);
+        return info;
+        
+    } catch (error) {
+        console.error(`Failed to send email to ${email}:`, error.message);
+        throw error;
+    }
 };
 
 const personalizeAndSendInvite = async (fullName, email, number) => {
@@ -202,37 +242,6 @@ const personalizeAndSendInvite = async (fullName, email, number) => {
     }
 };
 
-// Batch processing function for multiple invitations
-const personalizeAndSendInviteBatch = async (invitations, concurrencyLimit = 3) => {
-    // Initialize assets once for the entire batch
-    await initializeAssets();
-    
-    const results = [];
-    
-    // Process in batches to avoid overwhelming the email server
-    for (let i = 0; i < invitations.length; i += concurrencyLimit) {
-        const batch = invitations.slice(i, i + concurrencyLimit);
-        
-        const batchPromises = batch.map(({ fullName, email, number }) =>
-            personalizeAndSendInvite(fullName, email, number).catch(error => ({
-                error,
-                fullName,
-                email
-            }))
-        );
-        
-        const batchResults = await Promise.all(batchPromises);
-        results.push(...batchResults);
-        
-        // Small delay between batches to be respectful to email servers
-        if (i + concurrencyLimit < invitations.length) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-    }
-    
-    return results;
-};
-
 // Cleanup function to close transporter when done
 const cleanup = () => {
     if (transporterCache) {
@@ -244,6 +253,5 @@ const cleanup = () => {
 module.exports = {
     personalizeAndSendInvite,
     sendEmailWithAttachment,
-    personalizeAndSendInviteBatch,
     cleanup
 };
